@@ -1,0 +1,115 @@
+package botaoAcaoAdicionaProdutoEmMassa;
+
+import br.com.sankhya.extensions.actionbutton.AcaoRotinaJava;
+import br.com.sankhya.extensions.actionbutton.ContextoAcao;
+import br.com.sankhya.extensions.actionbutton.Registro;
+import br.com.sankhya.jape.vo.DynamicVO;
+import br.com.sankhya.jape.wrapper.JapeFactory;
+import br.com.sankhya.jape.wrapper.JapeWrapper;
+import br.com.sankhya.jape.wrapper.fluid.FluidCreateVO;
+import br.com.sankhya.jape.wrapper.fluid.FluidUpdateVO;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.stream.Collectors;
+
+public class adicionarProduto implements AcaoRotinaJava {
+    JapeWrapper ItemNotaDAO = JapeFactory.dao("ItemNota");
+    JapeWrapper ProdutoDAO = JapeFactory.dao("Produto");
+    JapeWrapper ControleDAO = JapeFactory.dao("VolumeAlternativo");
+    BigDecimal codigoProduto;
+    BigDecimal quantidadeProduto;
+    String controleProduto;
+    String codigoVolume;
+    BigDecimal codigoLocal = BigDecimal.valueOf(20000000);
+    Boolean existeRegistro;
+
+    @Override
+    public void doAction(ContextoAcao contexto) throws Exception {
+        ArrayList<BigDecimal> numeroNotaAtualizada = new ArrayList<>();
+        Registro[] linhas = contexto.getLinhas();
+        codigoProduto = new BigDecimal(contexto.getParam("CODPROD").toString());
+        quantidadeProduto = new BigDecimal(contexto.getParam("QTDNEG").toString());
+        controleProduto = String.valueOf(contexto.getParam("CONTROLE")).toUpperCase();;
+
+        if (codigoProduto.equals(BigDecimal.ZERO)) {
+            contexto.mostraErro("Não existe produto de código 0. Verifique!");
+        } else {
+            codigoVolume = obterCodigoVolume(codigoProduto);
+            try {
+                validarControle(codigoProduto, controleProduto);
+            } catch (Exception erroControle) {
+                contexto.mostraErro("Erro ao validar o controle: " + erroControle.getMessage());
+                return;
+            }
+
+            for (Registro linha : linhas) {
+                BigDecimal numeroNota = (BigDecimal) linha.getCampo("NUNOTA");
+                BigDecimal quantidadeExistente = verificarExistencia(codigoProduto, numeroNota);
+
+                if (quantidadeExistente.equals(BigDecimal.ZERO)) {
+                    incluirProdutoNasNotas(codigoProduto, quantidadeProduto, controleProduto, codigoVolume, numeroNota);
+                } else {
+                    BigDecimal novaQuantidade = quantidadeExistente.add(quantidadeProduto);
+                    atualizarQuantidadeProduto(numeroNota, codigoProduto, controleProduto, novaQuantidade);
+                    numeroNotaAtualizada.add(numeroNota);
+                }
+            }
+            if (numeroNotaAtualizada.isEmpty()) {
+                contexto.setMensagemRetorno("Produto " + codigoProduto + ", quantidade " + quantidadeProduto + ", controle " + controleProduto + ", volume " + codigoVolume + " incluído com sucesso.");
+            } else {
+                String mensagemAtualiza = String.format("Produto %s, quantidade %s, controle %s, volume %s incluído com sucesso nas notas selecionadas. Na nota %s a quantidade foi somada.",
+                        codigoProduto, quantidadeProduto, controleProduto, codigoVolume, numeroNotaAtualizada.stream().map(BigDecimal::toString).collect(Collectors.joining(", ")));
+                contexto.setMensagemRetorno(mensagemAtualiza);
+            }
+        }
+    }
+
+    private BigDecimal verificarExistencia(BigDecimal codigoProduto, BigDecimal numeroNota) throws Exception {
+        DynamicVO produtosVO = ItemNotaDAO.findOne("CODPROD = ? AND NUNOTA = ? AND CONTROLE = ?", codigoProduto, numeroNota, controleProduto);
+        if (produtosVO != null) {
+            existeRegistro = true;
+            return produtosVO.asBigDecimal("QTDNEG");
+        } else {
+            existeRegistro = false;
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private String obterCodigoVolume(BigDecimal codigoProduto) throws Exception {
+        DynamicVO produtoVO = ProdutoDAO.findOne("CODPROD = ?", codigoProduto);
+        if (produtoVO != null) {
+            return produtoVO.asString("CODVOL");
+        } else throw new Exception("Não foi possível encontrar o CODVOL para o produto " + codigoProduto);
+    }
+
+    private void validarControle(BigDecimal codigoProduto, String controleProduto) throws Exception {
+        DynamicVO controleVO = ControleDAO.findOne("CODPROD = ? AND CONTROLE = ?", codigoProduto, controleProduto);
+        if (controleVO == null) {
+            throw new Exception("O controle '" + controleProduto + "' não foi encontrado para o produto " + codigoProduto);
+        }
+    }
+
+    private void incluirProdutoNasNotas(BigDecimal codigoProduto, BigDecimal quantidadeProduto, String controleProduto, String codigoVolume, BigDecimal numeroNota) throws Exception {
+        FluidCreateVO TGFITEFCVO = ItemNotaDAO.create();
+        TGFITEFCVO.set("CODPROD", codigoProduto);
+        TGFITEFCVO.set("CONTROLE", controleProduto);
+        TGFITEFCVO.set("QTDNEG", quantidadeProduto);
+        TGFITEFCVO.set("CODVOL", codigoVolume);
+        TGFITEFCVO.set("CODLOCALORIG", codigoLocal);
+        TGFITEFCVO.set("NUNOTA", numeroNota);
+        TGFITEFCVO.save();
+    }
+
+    private void atualizarQuantidadeProduto(BigDecimal numeroNota, BigDecimal codigoProduto, String controleProduto, BigDecimal novaQuantidade) throws Exception {
+        DynamicVO produtoExistenteVO = ItemNotaDAO.findOne("CODPROD = ? AND NUNOTA = ? AND CONTROLE = ?", codigoProduto, numeroNota, controleProduto);
+        if (produtoExistenteVO != null) {
+            FluidUpdateVO produtoUpdateVO = ItemNotaDAO.prepareToUpdate(produtoExistenteVO);
+            produtoUpdateVO.set("QTDNEG", novaQuantidade);
+            produtoUpdateVO.update();
+        } else {
+            throw new Exception("Produto não encontrado para atualização.");
+        }
+    }
+
+}
